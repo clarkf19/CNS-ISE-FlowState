@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FlowState Gateway</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2 4 7v8c0 7.5 5.1 13.4 12 15 6.9-1.6 12-7.5 12-15V7z' fill='%232a78d6'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2 4 7v8c0 7.5 5.1 13.4 12 15 6.9-1.6 12-7.5 12-15V7z"/></svg>
+    <div>
+      <div class="brand-name">FlowState</div>
+      <div class="brand-sub">Secure Network Gateway against MITM &amp; session attacks</div>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <span id="gateway-status" class="pill"><span class="dot good"></span>Gateway running</span>
+    <button id="theme-toggle" class="icon-btn" title="Toggle light / dark" aria-label="Toggle light or dark theme">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/></svg>
+    </button>
+  </div>
+</header>
+
+<nav class="tabs" role="tablist">
+  <button role="tab" data-tab="overview" aria-selected="true">Overview</button>
+  <button role="tab" data-tab="live">Live gateway</button>
+  <button role="tab" data-tab="attacks">Attack lab</button>
+  <button role="tab" data-tab="log">Security log</button>
+  <button role="tab" data-tab="eval">Evaluation</button>
+</nav>
+
+<main>
+<!-- ======================================================== OVERVIEW -->
+<section id="tab-overview" class="tab-panel">
+  <div class="intro">
+    <h1>Every request is verified at one enforcement point</h1>
+    <p>Clients never talk to the server directly. Each request passes through the Secure Gateway, where it is
+      authenticated, decrypted, checked for integrity, freshness, session validity and authorization, and then
+      either forwarded or rejected and logged with a reason code.</p>
+  </div>
+
+  <h2 class="section-title">For every request the server needs assurance that it…</h2>
+  <ol class="assurances">
+    <li><b>comes from an authenticated client</b><span>Ed25519 signatures</span></li>
+    <li><b>has not been modified in transit</b><span>AES-256-GCM tag</span></li>
+    <li><b>belongs to a valid, current session</b><span>Session manager + expiry</span></li>
+    <li><b>has not already been processed</b><span>Nonces, sequence numbers, timestamps</span></li>
+    <li><b>is authorized for its operation</b><span>Role-based access control</span></li>
+  </ol>
+
+  <h2 class="section-title">System architecture <span class="muted">· Figure 1</span></h2>
+  <div class="arch">
+    <div class="arch-node">
+      <div class="arch-head">Client</div>
+      <ul>
+        <li>Long-term Ed25519 key pair</li>
+        <li>Pinned gateway public key</li>
+        <li>Signed X25519 handshake</li>
+        <li>AES-256-GCM requests with session ID, sequence number, nonce, timestamp</li>
+      </ul>
+    </div>
+    <div class="arch-arrow" aria-hidden="true"><span>encrypted<br>requests</span></div>
+    <div class="arch-node arch-gateway">
+      <div class="arch-head">Secure Gateway</div>
+      <div class="modules">
+        <div><b>Authentication</b>Ed25519 verification</div>
+        <div><b>Key exchange &amp; derivation</b>X25519 + HKDF-SHA256</div>
+        <div><b>Session manager</b>identity, role, keys, expiry, last seq</div>
+        <div><b>Cryptographic verification</b>AES-GCM decrypt + tag check</div>
+        <div><b>Replay detector</b>nonces, sequence, timestamps</div>
+        <div><b>Access control</b>role vs operation</div>
+        <div class="span2"><b>Security event logger</b>every decision with a reason code</div>
+      </div>
+    </div>
+    <div class="arch-arrow" aria-hidden="true"><span>verified<br>requests only</span></div>
+    <div class="arch-node">
+      <div class="arch-head">Backend server</div>
+      <ul>
+        <li>Transaction service (balance, transfer, admin operations)</li>
+        <li>Accepts only requests forwarded by the gateway</li>
+      </ul>
+    </div>
+  </div>
+  <p class="attacker-note"><span class="tag">Attack simulation module</span> sits on the wire between client and gateway
+    and performs tampering, replay, impersonation, session reuse and unauthorized-operation attempts.</p>
+
+  <h2 class="section-title">Validation pipeline at the gateway <span class="muted">· Figure 3</span></h2>
+  <div id="overview-pipeline" class="pipeline static"></div>
+
+  <h2 class="section-title">Each problem is matched to a specific mechanism</h2>
+  <div class="table-wrap">
+    <table class="data">
+      <thead><tr><th>Problem</th><th>Mechanism</th><th>Why it works</th></tr></thead>
+      <tbody>
+        <tr><td>Client impersonation</td><td>Ed25519 digital signatures</td><td>Only the holder of the private key can produce a valid signature; the gateway verifies it with the registered public key.</td></tr>
+        <tr><td>MITM on key exchange</td><td>Signed X25519 ephemeral key exchange</td><td>The shared secret is never transmitted, and signatures from both sides stop an attacker from substituting keys.</td></tr>
+        <tr><td>Weak or reused keys</td><td>HKDF-SHA256</td><td>Strong, independent keys per session and per direction: key separation and forward secrecy.</td></tr>
+        <tr><td>Eavesdropping and tampering</td><td>AES-256-GCM, header as associated data</td><td>Confidentiality and integrity together; any modified byte makes the authentication tag fail.</td></tr>
+        <tr><td>Replay attacks</td><td>Nonces, sequence numbers, timestamps</td><td>The gateway remembers what it has processed; duplicate, out-of-order or stale requests are identified.</td></tr>
+        <tr><td>Session hijacking / reuse</td><td>Cryptographically bound sessions with expiry</td><td>A stolen session ID is useless without the session keys, and expired sessions are rejected.</td></tr>
+        <tr><td>Unauthorized operations</td><td>Role-based access control</td><td>Authentication proves who the client is; a separate check decides what the client may do.</td></tr>
+        <tr><td>Undetected attacks</td><td>Security event logging</td><td>Every rejection is recorded with a reason code, making attacks visible and traceable.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ======================================================== LIVE -->
+<section id="tab-live" class="tab-panel" hidden>
+  <div class="live-grid">
+    <div class="col">
+      <div class="card">
+        <div class="card-head"><h2>Client</h2><span class="muted small">acting as a registered client</span></div>
+        <div id="user-picker" class="segmented" role="radiogroup" aria-label="Client"></div>
+        <div id="session-box" class="session-box"></div>
+        <button id="btn-handshake" class="btn secondary full">New authenticated handshake</button>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>Send a request</h2></div>
+        <label class="field"><span>Operation</span><select id="op-select"></select></label>
+        <div id="op-hint" class="hint"></div>
+        <div id="op-params"></div>
+        <button id="btn-send" class="btn primary full" disabled>Encrypt &amp; send through gateway</button>
+      </div>
+
+      <div class="card attacker">
+        <div class="card-head"><h2>Attacker on the wire</h2></div>
+        <p class="small muted">Acts on the selected client's last request as captured in transit.</p>
+        <div class="btn-row">
+          <button id="btn-replay" class="btn danger">Replay last request</button>
+          <button id="btn-tamper" class="btn danger">Tamper with last request</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>Gateway clock</h2><span id="clock-offset" class="muted small"></span></div>
+        <p class="small muted" id="clock-hint"></p>
+        <div class="btn-row">
+          <button class="btn secondary" data-advance="60000">+1 minute</button>
+          <button class="btn secondary" id="btn-expire">Skip past session expiry</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>Backend accounts</h2><button id="btn-reset" class="link-btn">Reset demo</button></div>
+        <div class="table-wrap"><table class="data compact" id="accounts-table"></table></div>
+      </div>
+    </div>
+
+    <div class="col">
+      <div class="card" id="exchange-card">
+        <div class="card-head"><h2>Last exchange</h2></div>
+        <div id="exchange" class="empty-state">Pick a client and send a request. The protected frame, each
+          validation step and the gateway's decision will appear here.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================================================== ATTACKS -->
+<section id="tab-attacks" class="tab-panel" hidden>
+  <div class="section-head">
+    <div>
+      <h1>Attack lab</h1>
+      <p class="muted">Each scenario launches a real attack against a fresh gateway through a man-in-the-middle proxy and reports the defence that stopped it.</p>
+    </div>
+    <button id="btn-run-all" class="btn primary">Run all attacks</button>
+  </div>
+  <div id="attack-summary" class="summary-bar" hidden></div>
+  <div id="attack-grid" class="attack-grid"></div>
+</section>
+
+<!-- ======================================================== LOG -->
+<section id="tab-log" class="tab-panel" hidden>
+  <div class="section-head">
+    <div>
+      <h1>Security event log</h1>
+      <p class="muted">Every accepted and rejected request from the live gateway, with timestamp, client, session, operation and reason code.</p>
+    </div>
+    <div id="chain-status" class="pill"></div>
+  </div>
+  <div id="reason-filters" class="chips" role="group" aria-label="Filter by reason code"></div>
+  <div class="table-wrap"><table class="data" id="log-table"></table></div>
+</section>
+
+<!-- ======================================================== EVALUATION -->
+<section id="tab-eval" class="tab-panel" hidden>
+  <div class="section-head">
+    <div>
+      <h1>Evaluation</h1>
+      <p class="muted" id="eval-meta">Legitimate traffic compared with every attack scenario; overhead measured against a plain forwarding proxy with no message security.</p>
+    </div>
+    <div class="btn-row">
+      <label class="field inline"><span>Requests</span>
+        <select id="eval-requests"><option>200</option><option selected>500</option><option>1000</option></select>
+      </label>
+      <button id="btn-eval" class="btn primary">Run evaluation</button>
+    </div>
+  </div>
+  <div id="eval-body" class="empty-state">No evaluation yet. Run one to measure attack-blocking effectiveness, detection rates, latency, throughput and encryption overhead.</div>
+</section>
+</main>
+
+<div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+<div id="toast" class="toast" role="status" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>

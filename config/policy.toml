@@ -1,0 +1,14 @@
+# Role-based access control policy.
+# Any operation not listed under [operations] is denied.
+
+[roles]
+customer = ["accounts:read", "payments:transfer"]
+auditor  = ["accounts:read", "admin:read"]
+admin    = ["accounts:read", "payments:transfer", "admin:read", "admin:write"]
+
+[operations]
+balance       = "accounts:read"
+transfer      = "payments:transfer"
+list_accounts = "admin:read"
+freeze_account = "admin:write"
+create_account = "admin:write"
