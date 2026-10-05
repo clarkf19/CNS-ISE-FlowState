@@ -1,4 +1,3 @@
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -7,8 +6,6 @@ from flowstate.authz import AuthorizationStage, Policy
 from flowstate.core.messages import ProtectedRequest
 from flowstate.core.pipeline import RequestContext
 from flowstate.core.reasons import ReasonCode, SecurityError
-
-ROOT = Path(__file__).resolve().parents[2]
 
 EXPECTED = {
     #             balance transfer list_accounts freeze create
@@ -19,14 +16,9 @@ EXPECTED = {
 OPS = ("balance", "transfer", "list_accounts", "freeze_account", "create_account")
 
 
-@pytest.fixture(params=["shipped", "fixture"])
-def any_policy(request, policy):
-    return Policy.load(ROOT / "config" / "policy.toml") if request.param == "shipped" else policy
-
-
 @pytest.mark.parametrize("role", EXPECTED)
-def test_role_operation_matrix(any_policy, role):
-    assert tuple(any_policy.is_allowed(role, op) for op in OPS) == EXPECTED[role]
+def test_role_operation_matrix(policy, role):
+    assert tuple(policy.is_allowed(role, op) for op in OPS) == EXPECTED[role]
 
 
 def test_deny_by_default(policy):

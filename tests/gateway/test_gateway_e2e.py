@@ -14,6 +14,14 @@ from flowstate.gateway.runtime import start_stack
 from flowstate.gateway.server import GatewaySettings
 
 
+def test_builtin_policy_matches_config_file(policy):
+    """The in-process stack (tests, attacks, dashboard) must enforce the shipped policy."""
+    from flowstate.authz import Policy
+    from flowstate.gateway.runtime import DEFAULT_POLICY
+
+    assert Policy.from_dict(DEFAULT_POLICY) == policy
+
+
 def raw(stack, payload: bytes):
     with socket.create_connection(stack.gateway_addr, timeout=5) as sock:
         send_frame(sock, payload)
