@@ -81,13 +81,17 @@ def make_handler(app: Dashboard):
 
         def do_POST(self) -> None:
             path = self.path.split("?", 1)[0]
-            if path not in routes_post:
-                return self._json(HTTPStatus.NOT_FOUND, {"error": "unknown endpoint"})
             length = int(self.headers.get("Content-Length") or 0)
             if length > MAX_BODY:
+                self.close_connection = True
                 return self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "body too large"})
+            # Always consume the body before replying: closing a socket with unread
+            # data makes Windows reset the connection instead of delivering the reply.
+            raw = self.rfile.read(length)
+            if path not in routes_post:
+                return self._json(HTTPStatus.NOT_FOUND, {"error": "unknown endpoint"})
             try:
-                body = json.loads(self.rfile.read(length) or b"{}")
+                body = json.loads(raw or b"{}")
                 if not isinstance(body, dict):
                     raise ValueError
             except ValueError:

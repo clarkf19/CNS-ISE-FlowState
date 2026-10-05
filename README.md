@@ -42,6 +42,9 @@ flowstate-keys keygen   --client-id dave                                        
 flowstate-keys register --client-id dave --role customer --public-key keys/dave.pub   # on the gateway
 ```
 
+Registration gives dave an identity at the gateway; a bank account in the backend is a
+separate admin action (`flowstate-client --id root create-account --account dave`).
+
 Run the system in three terminals:
 
 ```bash
