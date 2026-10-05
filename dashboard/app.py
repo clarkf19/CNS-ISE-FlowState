@@ -13,8 +13,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from attacks.runner import run_scenarios
-from attacks.scenarios import ALL_SCENARIOS
+from attacks.scenarios import ALL_SCENARIOS, Attack
 from eval.benchmark import run as run_evaluation
 from flowstate.audit import verify_chain
 from flowstate.client import GatewayRejected, SecureClient
@@ -45,6 +44,27 @@ ATTACK_INFO = {
     "recorded_traffic_key_compromise": ("Long-term key compromise", "Forward secrecy (ephemeral X25519)"),
     "backend_bypass": ("Bypass the gateway", "Backend accepts only gateway-forwarded requests"),
 }
+
+
+# Defences that act outside the gateway pipeline, so they leave no gateway log entry.
+_CAUGHT_OUTSIDE_PIPELINE = {
+    "mitm_key_substitution_gateway": "client",       # client's pinned-key check
+    "eavesdropping": "encryption",                   # nothing readable on the wire
+    "recorded_traffic_key_compromise": "forward_secrecy",
+    "backend_bypass": "backend",                     # backend's gateway-only token
+}
+
+
+def caught_at(scenario: str, trace: list[dict]) -> str:
+    """Name the checkpoint that stopped an attack, from the first rejection logged."""
+    if scenario in _CAUGHT_OUTSIDE_PIPELINE:
+        return _CAUGHT_OUTSIDE_PIPELINE[scenario]
+    if not trace:
+        return "unknown"
+    first = trace[0]
+    if first["phase"] == "handshake":
+        return "handshake"
+    return first.get("stage") or "decode"
 
 
 def _hex(b: bytes, limit: int | None = None) -> str:
@@ -260,10 +280,27 @@ class Dashboard:
         return out
 
     def run_attack(self, name: str | None = None) -> list[dict]:
-        names = [name] if name else None
-        if name and name not in {s.__name__ for s in ALL_SCENARIOS}:
+        """Run scenarios on fresh stacks; report where each attack was stopped.
+
+        ``trace`` is every rejection the gateway logged during the scenario and
+        ``caught_at`` names the defence that stopped the attack, which the page
+        uses to animate the attack hitting that exact checkpoint.
+        """
+        scenarios = [s for s in ALL_SCENARIOS if name is None or s.__name__ == name]
+        if not scenarios:
             raise ValueError(f"unknown scenario {name!r}")
-        return [r.__dict__ for r in run_scenarios(names)]
+        out = []
+        for scenario in scenarios:
+            clock = OffsetClock()
+            with start_stack(clock=clock) as stack:
+                result = scenario(Attack(stack, clock))
+                trace = [
+                    self._event(i, e) for i, e in enumerate(stack.events.events)
+                    if e.reason.value != "ACCEPTED"
+                ]
+            out.append({**result.__dict__, "trace": trace,
+                        "caught_at": caught_at(scenario.__name__, trace)})
+        return out
 
     def evaluate(self, requests: int, clients: int) -> dict:
         if not self._eval_lock.acquire(blocking=False):

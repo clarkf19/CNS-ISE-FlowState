@@ -43,6 +43,7 @@ const S = {
   user: "alice",
   catalog: [],
   attackResults: {},
+  attackRunning: null,
   logFilter: null,
   evaluation: null,
 };
@@ -319,39 +320,6 @@ function initLive() {
 }
 
 // ------------------------------------------------------------------ attack lab
-async function loadCatalog() {
-  try {
-    S.catalog = await api("/api/attacks");
-    renderAttacks();
-  } catch (e) { toast(e.message); }
-}
-
-function renderAttacks() {
-  $("#attack-grid").innerHTML = S.catalog.map((a) => {
-    const r = S.attackResults[a.name];
-    const result = r ? `<div class="result">
-        <span class="status ${r.blocked ? "ok" : "bad"}">${r.blocked ? ICON.check + "Blocked" : ICON.cross + "Not blocked"}</span>
-        · observed ${badge(r.observed)} · legitimate traffic ${r.legit_ok ? "unaffected" : "<b>affected</b>"}
-        ${r.detail ? `<div class="detail">${esc(r.detail)}</div>` : ""}</div>` : "";
-    return `<article class="card attack">
-      <div class="card-head"><h3>${esc(a.title)}</h3></div>
-      <p class="desc">${esc(a.description)}</p>
-      <dl class="meta"><dt>Defence</dt><dd>${esc(a.defence)}</dd><dt>Expected</dt><dd>${badge(expectedFor(a.name))}</dd></dl>
-      ${result}
-      <div class="actions"><button class="btn secondary" data-attack="${esc(a.name)}">${r ? "Run again" : "Run attack"}</button></div>
-    </article>`;
-  }).join("");
-  const done = Object.values(S.attackResults);
-  const sum = $("#attack-summary");
-  if (done.length) {
-    const blocked = done.filter((r) => r.blocked).length;
-    sum.hidden = false;
-    sum.className = `summary-bar ${blocked === done.length ? "" : "bad"}`;
-    sum.innerHTML = `<span class="status ${blocked === done.length ? "ok" : "bad"}">${blocked === done.length ? ICON.check : ICON.cross}</span>
-      ${blocked} of ${done.length} attacks run so far were blocked; legitimate traffic ${done.every((r) => r.legit_ok) ? "continued normally" : "was affected"}.`;
-  }
-}
-
 const EXPECTED = {
   mitm_tampering: "MODIFIED_MESSAGE", mitm_header_tampering: "MODIFIED_MESSAGE",
   mitm_key_substitution_client: "INVALID_SIGNATURE", mitm_key_substitution_gateway: "INVALID_SIGNATURE",
@@ -362,21 +330,239 @@ const EXPECTED = {
 };
 const expectedFor = (name) => S.attackResults[name]?.expected || EXPECTED[name] || "—";
 
+// What the attacker does, in a few words, shown on the attacker node while it runs.
+const ACTION = {
+  mitm_tampering: "flips ciphertext bits: 1,000 → 9,000",
+  mitm_header_tampering: "edits the sequence number in the header",
+  mitm_key_substitution_client: "swaps alice's handshake key for its own",
+  mitm_key_substitution_gateway: "swaps the gateway's handshake key for its own",
+  replay_request: "re-sends a captured transfer",
+  delayed_request: "holds a transfer, releases it 2 min later",
+  reordered_request: "delivers request #1 after request #2",
+  handshake_replay: "replays alice's captured ClientHello",
+  impersonation: "claims to be alice with a forged signature",
+  session_hijack: "sniffs alice's session ID, sends its own transfer",
+  expired_session_reuse: "reuses a session after it expired",
+  unauthorized_operation: "customer calls admin-only freeze_account",
+  eavesdropping: "records all traffic, searches for plaintext",
+  recorded_traffic_key_compromise: "steals both private keys, decrypts a recording",
+  backend_bypass: "skips the gateway, calls the bank directly",
+};
+
+const CHECKPOINT = {
+  handshake: "Signed handshake (step 0)", session: "Session check (step 1)", decrypt: "AES-GCM tag check (step 2)",
+  replay: "Replay check (step 3)", freshness: "Freshness check (step 4)", authorization: "Authorization (step 5)",
+  client: "Client's pinned gateway key", encryption: "Encryption on the wire",
+  forward_secrecy: "Forward secrecy", backend: "Bank's gateway-only token",
+};
+const PIPELINE = ["session", "decrypt", "replay", "freshness", "authorization"];
+const GATEWAY_CPS = new Set(["handshake", ...PIPELINE]);
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const reducedMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+async function loadCatalog() {
+  try {
+    S.catalog = await api("/api/attacks");
+    renderScore();
+    renderAttacks();
+  } catch (e) { toast(e.message); }
+}
+
+function renderAttacks() {
+  $("#attack-grid").innerHTML = S.catalog.map((a) => {
+    const r = S.attackResults[a.name];
+    const blocked = r?.blocked;
+    const result = r ? `<div class="result">
+        <span class="status bad">${ICON.cross}${blocked ? "Attack stopped" : "NOT blocked"}</span>
+        by <b>${esc(CHECKPOINT[r.caught_at] || r.caught_at)}</b> · ${badge(r.observed)}
+        <div class="detail">${r.legit_ok ? "Legitimate traffic kept working." : "Legitimate traffic was affected."}${r.detail ? " " + esc(r.detail) : ""}</div></div>` : "";
+    return `<article class="card attack ${blocked ? "blocked" : ""} ${S.attackRunning === a.name ? "running" : ""}" id="atk-${esc(a.name)}">
+      ${blocked ? '<span class="stamp">Blocked</span>' : ""}
+      <div class="card-head"><h3>${esc(a.title)}</h3></div>
+      <p class="desc">${esc(a.description)}</p>
+      <dl class="meta"><dt>Attacker</dt><dd>${esc(ACTION[a.name] || "")}</dd><dt>Defence</dt><dd>${esc(a.defence)}</dd><dt>Expected</dt><dd>${badge(expectedFor(a.name))}</dd></dl>
+      ${result}
+      <div class="actions"><button class="btn danger" data-attack="${esc(a.name)}" ${S.attackRunning ? "disabled" : ""}>${r ? "Launch again" : "Launch attack"}</button></div>
+    </article>`;
+  }).join("");
+}
+
+function renderScore() {
+  const total = S.catalog.length || 15;
+  const results = Object.values(S.attackResults);
+  $("#score-total").textContent = total;
+  $("#score-blocked").textContent = results.filter((r) => r.blocked).length;
+  $("#score-bar").innerHTML = S.catalog.map((a) => {
+    const r = S.attackResults[a.name];
+    const cls = S.attackRunning === a.name ? "running" : r ? (r.blocked ? "done" : "failed") : "";
+    return `<div class="seg ${cls}" title="${esc(a.title)}"></div>`;
+  }).join("");
+  const legit = $("#score-legit");
+  if (results.length) {
+    const ok = results.every((r) => r.legit_ok);
+    legit.innerHTML = `<span class="dot ${ok ? "good" : "bad"}"></span>Legitimate traffic: ${ok ? "kept working after every attack" : "affected"}`;
+  }
+}
+
+function consoleLine(html, cls = "") {
+  const c = $("#attack-console");
+  const time = new Date().toLocaleTimeString([], { hour12: false });
+  c.insertAdjacentHTML("beforeend", `<div class="line ${cls}"><span class="dim">[${time}]</span> ${html}</div>`);
+  c.scrollTop = c.scrollHeight;
+}
+
+function setAlert(state, icon, title, sub) {
+  $("#attack-alert").className = `alert ${state}`;
+  $("#alert-icon").innerHTML = icon;
+  $("#alert-title").innerHTML = title;
+  $("#alert-sub").innerHTML = sub;
+}
+
+const BOLT = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9 1 3 9h4l-1 6 6-8H8z" fill="currentColor"/></svg>';
+const SHIELD_X = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1 2 3.5v4C2 11 4.6 14 8 15c3.4-1 6-4 6-7.5v-4z" fill="currentColor"/><path d="M5.8 5.8l4.4 4.4M10.2 5.8l-4.4 4.4" stroke="#d03b3b" stroke-width="1.8" stroke-linecap="round"/></svg>';
+
+function resetArena() {
+  document.querySelectorAll("#arena .cp").forEach((c) => c.classList.remove("hit", "passed"));
+  $("#node-gateway").classList.remove("caught", "defending");
+  $("#node-backend").classList.remove("backend-hit");
+  $("#node-attacker").classList.remove("active");
+  $("#bank-status").textContent = "untouched";
+  document.querySelectorAll("#arena .impact").forEach((i) => i.remove());
+  $("#packet").hidden = true;
+}
+
+function centerOf(el) {
+  const a = $("#arena").getBoundingClientRect(), r = el.getBoundingClientRect();
+  return { x: r.left - a.left + r.width / 2, y: r.top - a.top + r.height / 2 };
+}
+
+async function movePacket(fromEl, toEl) {
+  const p = $("#packet");
+  const from = centerOf(fromEl), to = centerOf(toEl);
+  p.classList.remove("burst");
+  p.style.transition = "none";
+  p.style.left = `${from.x}px`;
+  p.style.top = `${from.y}px`;
+  p.hidden = false;
+  void p.offsetWidth; // commit the start position before animating
+  p.style.transition = "";
+  p.style.left = `${to.x}px`;
+  p.style.top = `${to.y}px`;
+  await sleep(reducedMotion() ? 50 : 900);
+  return to;
+}
+
+function impactAt(point) {
+  const ring = document.createElement("div");
+  ring.className = "impact";
+  ring.style.left = `${point.x}px`;
+  ring.style.top = `${point.y}px`;
+  $("#arena").appendChild(ring);
+  $("#packet").classList.add("burst");
+  const flash = $("#red-flash");
+  flash.classList.remove("on");
+  void flash.offsetWidth;
+  flash.classList.add("on");
+}
+
+async function playAttack(name) {
+  const a = S.catalog.find((x) => x.name === name);
+  S.attackRunning = name;
+  resetArena();
+  renderScore();
+  renderAttacks();
+  $("#theatre").classList.add("under-attack");
+  $("#node-attacker").classList.add("active");
+  $("#attacker-action").textContent = ACTION[name] || "attacking";
+  setAlert("running", BOLT, `Attack in progress: ${esc(a.title)}`, esc(a.description));
+  consoleLine(`<span class="atk">▶ launching ${esc(name)}</span> <span class="dim">— attacker ${esc(ACTION[name] || "")}</span>`);
+
+  try {
+    const [r] = await Promise.all([api("/api/attack", { name }).then((x) => x[0]), sleep(reducedMotion() ? 0 : 450)]);
+    const target = $(`#cp-${r.caught_at}`) || $("#node-gateway");
+    const source = r.caught_at === "forward_secrecy" ? $("#cp-encryption") : $("#node-attacker");
+    if (GATEWAY_CPS.has(r.caught_at)) $("#node-gateway").classList.add("defending");
+
+    // Light the pipeline stages the attack got through before it was stopped.
+    const stopAt = PIPELINE.indexOf(r.caught_at);
+    PIPELINE.slice(0, Math.max(0, stopAt)).forEach((s) => $(`#cp-${s}`).classList.add("passed"));
+
+    const point = await movePacket(source, target);
+    S.attackResults[name] = r;
+    const where = esc(CHECKPOINT[r.caught_at] || r.caught_at);
+    if (r.blocked) {
+      impactAt(point);
+      target.classList.add("hit");
+      if (GATEWAY_CPS.has(r.caught_at)) $("#node-gateway").classList.add("caught");
+      if (r.caught_at === "backend") {
+        $("#node-backend").classList.add("backend-hit");
+        $("#bank-status").textContent = "refused the direct call";
+      } else {
+        $("#bank-status").textContent = "untouched — no money moved";
+      }
+      setAlert("blocked", SHIELD_X, `ATTACK BLOCKED · <code>${esc(r.observed)}</code>`,
+        `Stopped by <b>${where}</b> — ${esc(a.defence)}. ` +
+        (r.legit_ok ? "Legitimate traffic kept working." : "Legitimate traffic was affected."));
+      consoleLine(`<span class="blk">✖ BLOCKED ${esc(r.observed)}</span> at ${where}`);
+      if (r.trace?.length) consoleLine(`<span class="dim">  gateway log: ${esc(r.trace[0].reason)} · ${esc(r.trace[0].detail)}</span>`);
+      consoleLine(`<span class="ok">  ✔ legitimate request after the attack: ${r.legit_ok ? "accepted" : "FAILED"}</span>`);
+    } else {
+      setAlert("running", ICON.cross, `NOT BLOCKED · expected <code>${esc(r.expected)}</code>, observed <code>${esc(r.observed)}</code>`, esc(r.detail));
+      consoleLine(`<span class="blk">!! ${esc(name)} was NOT blocked</span>`);
+    }
+    return r;
+  } catch (e) {
+    toast(e.message);
+    consoleLine(`<span class="blk">error: ${esc(e.message)}</span>`);
+  } finally {
+    S.attackRunning = null;
+    $("#node-attacker").classList.remove("active");
+    $("#attacker-action").textContent = "waiting…";
+    $("#theatre").classList.remove("under-attack");
+    renderScore();
+    renderAttacks();
+  }
+}
+
+async function runAll(btn) {
+  if (!S.catalog.length) await loadCatalog();
+  const original = btn.innerHTML;
+  btn.disabled = true;
+  S.attackResults = {};
+  renderScore();
+  renderAttacks();
+  consoleLine(`<span class="atk">=== launching all ${S.catalog.length} attacks ===</span>`);
+  try {
+    for (const [i, a] of S.catalog.entries()) {
+      btn.innerHTML = `<span class="spinner"></span> Attack ${i + 1} of ${S.catalog.length}`;
+      await playAttack(a.name);
+      await sleep(reducedMotion() ? 0 : 1100);
+    }
+    const results = Object.values(S.attackResults);
+    const blocked = results.filter((r) => r.blocked).length;
+    const legit = results.every((r) => r.legit_ok);
+    const all = blocked === results.length;
+    resetArena();
+    setAlert(all ? "done" : "blocked", all ? ICON.check : ICON.cross,
+      `${blocked} of ${results.length} attacks blocked`,
+      legit ? "Every attack was stopped, and legitimate traffic kept working after each one."
+            : "Legitimate traffic was affected by at least one attack.");
+    consoleLine(`<span class="${all ? "ok" : "blk"}">=== ${blocked}/${results.length} attacks blocked · legitimate traffic ${legit ? "unaffected" : "AFFECTED"} ===</span>`);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = original;
+  }
+}
+
 function initAttacks() {
   $("#attack-grid").addEventListener("click", (e) => {
     const b = e.target.closest("button[data-attack]");
-    if (!b) return;
-    busy(b, "Attacking…", async () => {
-      const [r] = await api("/api/attack", { name: b.dataset.attack });
-      S.attackResults[r.name] = r;
-      renderAttacks();
-    });
+    if (!b || S.attackRunning) return;
+    $("#theatre").scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block: "start" });
+    playAttack(b.dataset.attack);
   });
-  $("#btn-run-all").addEventListener("click", (e) => busy(e.currentTarget, "Running all…", async () => {
-    if (!S.catalog.length) await loadCatalog();
-    for (const r of await api("/api/attack", {})) S.attackResults[r.name] = r;
-    renderAttacks();
-  }));
+  $("#btn-run-all").addEventListener("click", (e) => { if (!S.attackRunning) runAll(e.currentTarget); });
 }
 
 // ------------------------------------------------------------------ security log

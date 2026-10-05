@@ -72,6 +72,8 @@ def test_session_expiry_via_clock(server):
 def test_attack_endpoint(server):
     _, results = call(server, "/api/attack", {"name": "replay_request"})
     assert results[0]["blocked"]
+    assert results[0]["caught_at"] == "replay"
+    assert results[0]["trace"][0]["reason"] == "DUPLICATE_NONCE"
     status, _ = call(server, "/api/attack", {"name": "nope"})
     assert status == 400
 

@@ -168,11 +168,86 @@
       <h1>Attack lab</h1>
       <p class="muted">Each scenario launches a real attack against a fresh gateway through a man-in-the-middle proxy and reports the defence that stopped it.</p>
     </div>
-    <button id="btn-run-all" class="btn primary">Run all attacks</button>
+    <button id="btn-run-all" class="btn danger-solid">Launch all 15 attacks</button>
   </div>
-  <div id="attack-summary" class="summary-bar" hidden></div>
+
+  <div class="theatre card" id="theatre">
+    <div class="theatre-top">
+      <div class="score">
+        <div class="score-num"><span id="score-blocked">0</span><small>/<span id="score-total">15</span></small></div>
+        <div class="score-label">attacks blocked</div>
+      </div>
+      <div class="score-bar" id="score-bar" aria-hidden="true"></div>
+      <div class="score-legit" id="score-legit"><span class="dot good"></span>Legitimate traffic: not tested yet</div>
+    </div>
+
+    <div class="arena" id="arena">
+      <div class="actor" id="node-client">
+        <div class="actor-icon">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/></svg>
+        </div>
+        <div class="actor-name">Client</div>
+        <div class="actor-sub">alice</div>
+        <div class="cp" id="cp-client" title="Client checks the gateway signature against its pinned key">pinned gateway key</div>
+      </div>
+
+      <div class="wire"><span class="cp" id="cp-encryption" title="Everything on the wire is AES-256-GCM encrypted">encrypted wire</span></div>
+
+      <div class="actor attacker" id="node-attacker">
+        <div class="actor-icon">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11c3-1 6-1.5 9-1.5s6 .5 9 1.5"/><path d="M6 10.5 7.5 5h9l1.5 5.5"/><circle cx="8" cy="15" r="2.6"/><circle cx="16" cy="15" r="2.6"/><path d="M10.6 15h2.8"/></svg>
+        </div>
+        <div class="actor-name">Attacker</div>
+        <div class="actor-sub" id="attacker-action">waiting…</div>
+        <div class="cp" id="cp-forward_secrecy" title="Old sessions cannot be decrypted even with stolen long-term keys">forward secrecy</div>
+      </div>
+
+      <div class="wire"></div>
+
+      <div class="actor gateway" id="node-gateway">
+        <div class="actor-head">
+          <svg class="shield" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2 4 7v8c0 7.5 5.1 13.4 12 15 6.9-1.6 12-7.5 12-15V7z"/></svg>
+          <div><div class="actor-name">Secure Gateway</div><div class="actor-sub">every request checked in order</div></div>
+        </div>
+        <div class="checkpoints">
+          <div class="cp" id="cp-handshake"><b>0</b>Signed handshake</div>
+          <div class="cp" id="cp-session"><b>1</b>Session</div>
+          <div class="cp" id="cp-decrypt"><b>2</b>AES-GCM tag</div>
+          <div class="cp" id="cp-replay"><b>3</b>Replay</div>
+          <div class="cp" id="cp-freshness"><b>4</b>Freshness</div>
+          <div class="cp" id="cp-authorization"><b>5</b>Authorization</div>
+        </div>
+      </div>
+
+      <div class="wire"></div>
+
+      <div class="actor" id="node-backend">
+        <div class="actor-icon">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10 12 4l9 6"/><path d="M5 10v8M9.5 10v8M14.5 10v8M19 10v8"/><path d="M3 20h18"/></svg>
+        </div>
+        <div class="actor-name">Bank server</div>
+        <div class="actor-sub" id="bank-status">untouched</div>
+        <div class="cp" id="cp-backend" title="The backend only accepts requests carrying the gateway's secret token">gateway-only</div>
+      </div>
+
+      <div class="packet" id="packet" hidden></div>
+    </div>
+
+    <div class="alert idle" id="attack-alert" aria-live="polite">
+      <div class="alert-icon" id="alert-icon"></div>
+      <div>
+        <div class="alert-title" id="alert-title">Ready. Launch an attack to watch the gateway stop it.</div>
+        <div class="alert-sub" id="alert-sub">Each attack runs for real against a fresh gateway through a man-in-the-middle proxy.</div>
+      </div>
+    </div>
+
+    <div class="console" id="attack-console" aria-label="Attack console"><div class="line dim">$ flowstate attack-lab --ready</div></div>
+  </div>
+
+  <h2 class="section-title">Attack catalogue</h2>
   <div id="attack-grid" class="attack-grid"></div>
 </section>
+<div class="red-flash" id="red-flash" aria-hidden="true"></div>
 
 <!-- ======================================================== LOG -->
 <section id="tab-log" class="tab-panel" hidden>

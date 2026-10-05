@@ -101,13 +101,26 @@ def make_handler(app: Dashboard):
     return Handler
 
 
+class ExclusiveHTTPServer(ThreadingHTTPServer):
+    # The stdlib default (SO_REUSEADDR) lets a second server bind the same port on
+    # Windows, so two dashboards would silently share it. Refuse instead.
+    allow_reuse_address = False
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="dashboard")
     parser.add_argument("--port", type=int, default=8080)
     args = parser.parse_args(argv)
 
+    try:
+        server = ExclusiveHTTPServer(("127.0.0.1", args.port), None)
+    except OSError:
+        raise SystemExit(
+            f"Port {args.port} is already in use - is the dashboard already running? "
+            f"Close it, or start this one with --port {args.port + 1}."
+        )
     app = Dashboard()
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(app))
+    server.RequestHandlerClass = make_handler(app)
     print(f"FlowState dashboard: http://localhost:{args.port}", flush=True)
     try:
         server.serve_forever()
